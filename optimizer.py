@@ -3,15 +3,17 @@ AI Strategy Optimizer — Continuous Refinement Loop
 
 Uses evolutionary optimization to continuously improve trading strategies.
 Each cycle:
-  1. Generate fresh fractal NQ market data
-  2. Run all strategies on the data
-  3. Score results
-  4. Evolve: keep winners, mutate, crossover
-  5. Log everything
-  6. Repeat forever
+  1. Fetch REAL NQ market data (Yahoo Finance) or use cached real data
+  2. Run all strategies on REAL bars
+  3. AI analyzer examines every trade — learns what worked, what didn't
+  4. Analyzer generates insights and parameter adjustments
+  5. Evolve: keep winners, mutate, crossover, APPLY AI LEARNINGS
+  6. Log everything
+  7. Repeat forever — getting smarter every cycle
 
 The optimizer treats the strategy parameter space as a population
-of organisms competing for survival — Darwinian selection on trading fitness.
+of organisms competing for survival — Darwinian selection on trading fitness,
+guided by the AI analyzer's accumulated intelligence.
 """
 
 import numpy as np
@@ -19,7 +21,7 @@ import pandas as pd
 import time
 import json
 import threading
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import List, Dict, Optional, Tuple
 from market_generator import NQMarketGenerator, NQSessionConfig, resample_bars
 from strategies import (
@@ -28,6 +30,8 @@ from strategies import (
     MomentumStrategy, MultiTimeframeFractalStrategy,
 )
 from backtester import BacktestEngine, BacktestResult, Trade
+from data_feed import RealDataFeed
+from analyzer import AITradeAnalyzer
 
 
 @dataclass
@@ -51,6 +55,10 @@ class CycleResult:
     all_results: List[Dict]     # Summary of every strategy tested
     best_params: Dict           # The winning parameter set
     best_trades_detail: List[Dict]  # Full trade log of winner
+    data_source: str = ""           # Where the bars came from (REAL vs synthetic)
+    data_symbol: str = ""           # What symbol was traded
+    ai_insights_count: int = 0      # New insights generated this cycle
+    ai_adjustments: Dict = field(default_factory=dict)  # AI parameter adjustments applied
 
 
 class EvolutionaryOptimizer:
@@ -77,10 +85,12 @@ class EvolutionaryOptimizer:
         for _ in range(population_size - 1):
             self.population.append(base.mutate(self.rng, mutation_rate=0.6))
 
-    def evolve(self, scores: List[float]):
+    def evolve(self, scores: List[float], ai_adjustments: Optional[Dict] = None):
         """
         Evolve the population based on fitness scores.
         Uses elitism + tournament selection + crossover + mutation.
+        AI adjustments are applied to children — this is how the analyzer's
+        learnings feed back into the population.
         """
         # Pair scores with parameter sets
         paired = list(zip(scores, self.population))
@@ -92,7 +102,7 @@ class EvolutionaryOptimizer:
         for i in range(min(self.elite_count, len(paired))):
             new_population.append(paired[i][1])
 
-        # Fill rest with crossover + mutation
+        # Fill rest with crossover + mutation + AI adjustments
         while len(new_population) < self.population_size:
             # Tournament selection
             parent1 = self._tournament_select(paired)
@@ -104,9 +114,29 @@ class EvolutionaryOptimizer:
             # Mutation
             child = child.mutate(self.rng, self.mutation_rate)
 
+            # Apply AI analyzer's learned adjustments (if any)
+            if ai_adjustments:
+                child = self._apply_ai_adjustments(child, ai_adjustments)
+
             new_population.append(child)
 
         self.population = new_population
+
+    def _apply_ai_adjustments(self, params: StrategyParams, adjustments: Dict) -> StrategyParams:
+        """
+        Apply AI-derived parameter adjustments to a parameter set.
+        The analyzer tells us things like 'widen stops' or 'tighten targets'
+        and we translate that into actual parameter changes.
+        """
+        for param_name, delta in adjustments.items():
+            if hasattr(params, param_name):
+                current = getattr(params, param_name)
+                if isinstance(current, int):
+                    new_val = int(current + delta)
+                else:
+                    new_val = current + delta
+                setattr(params, param_name, new_val)
+        return params
 
     def _tournament_select(self, paired: List[Tuple[float, StrategyParams]],
                            tournament_size: int = 3) -> StrategyParams:
@@ -167,6 +197,8 @@ class BacktestLoop:
     def __init__(self, population_size: int = 12, seed: Optional[int] = None):
         self.optimizer = EvolutionaryOptimizer(population_size=population_size, seed=seed)
         self.engine = BacktestEngine()
+        self.data_feed = RealDataFeed()       # REAL market data
+        self.analyzer = AITradeAnalyzer()      # AI learning brain
         self.cycle_count = 0
         self.all_cycle_results: List[CycleResult] = []
         self.best_ever_score = float('-inf')
@@ -179,31 +211,34 @@ class BacktestLoop:
         self.current_bars: Optional[pd.DataFrame] = None
         self.current_trades: List[Trade] = []
         self.current_result: Optional[BacktestResult] = None
+        self.current_data_meta: Dict = {}     # Info about current data source
         self.status = "IDLE"
 
     def run_cycle(self) -> CycleResult:
-        """Execute one full optimization cycle."""
+        """Execute one full optimization cycle with REAL data + AI analysis."""
         t0 = time.time()
         self.cycle_count += 1
-        self.status = f"CYCLE {self.cycle_count} — Generating market data"
+        self.status = f"CYCLE {self.cycle_count} — Fetching REAL market data"
 
         # Pick a random timeframe for this cycle (fractal: test all scales)
         tf = self.TIMEFRAMES[self.cycle_count % len(self.TIMEFRAMES)]
-        num_bars = max(500, 2000 // max(tf, 1))
+        num_bars = max(200, 2000 // max(tf, 1))
 
-        # Generate fresh fractal market data
-        gen = NQMarketGenerator(seed=None)  # Different data each cycle
-        bars = gen.generate_bars(num_bars, timeframe_minutes=tf)
+        # ── STEP 1: Get REAL market data ──
+        bars, data_meta = self.data_feed.get_bars(timeframe_minutes=tf, min_bars=num_bars)
 
         with self._lock:
             self.current_bars = bars.copy()
+            self.current_data_meta = data_meta
 
-        self.status = f"CYCLE {self.cycle_count} — Testing {len(self.optimizer.population)} parameter sets x {len(self.STRATEGY_CLASSES)} strategies"
+        data_label = "REAL" if data_meta["is_real"] else "SYNTHETIC"
+        self.status = (f"CYCLE {self.cycle_count} — [{data_label}] "
+                       f"Testing {len(self.optimizer.population)} params x "
+                       f"{len(self.STRATEGY_CLASSES)} strategies on {data_meta['symbol']}")
 
-        # Test every strategy with every parameter set in the population
+        # ── STEP 2: Test every strategy x every parameter set ──
         all_results: List[BacktestResult] = []
-        scores: List[float] = []
-        param_scores: List[float] = []  # Aggregate score per param set
+        param_scores: List[float] = []
 
         for param_idx, params in enumerate(self.optimizer.population):
             param_total_score = 0
@@ -222,8 +257,20 @@ class BacktestLoop:
             self.current_result = best_result
             self.current_trades = best_result.trades
 
-        # Evolve population based on aggregate scores
-        self.optimizer.evolve(param_scores)
+        # ── STEP 3: AI ANALYZER — Learn from every trade ──
+        self.status = f"CYCLE {self.cycle_count} — AI analyzing {best_result.total_trades} trades..."
+        new_insights = self.analyzer.analyze_cycle(best_result, bars)
+
+        # Also analyze all results (not just the best) for broader learning
+        for result in all_results:
+            if result is not best_result and result.total_trades >= 3:
+                self.analyzer.analyze_cycle(result, bars)
+
+        # Get AI's parameter adjustment recommendations
+        ai_adjustments = self.analyzer.get_param_adjustments()
+
+        # ── STEP 4: Evolve population WITH AI learnings ──
+        self.optimizer.evolve(param_scores, ai_adjustments=ai_adjustments if ai_adjustments else None)
 
         # Track global best
         if best_result.score > self.best_ever_score:
@@ -231,7 +278,7 @@ class BacktestLoop:
             self.best_ever_params = best_result.params
             self.best_ever_strategy = best_result.strategy_name
 
-        # Build cycle result
+        # ── STEP 5: Build cycle result ──
         duration = time.time() - t0
         diversity = self.optimizer.compute_diversity()
 
@@ -239,7 +286,7 @@ class BacktestLoop:
             cycle_number=self.cycle_count,
             timestamp=time.time(),
             duration_seconds=duration,
-            bars_generated=num_bars,
+            bars_generated=len(bars),
             timeframe=tf,
             num_strategies_tested=len(all_results),
             best_strategy=best_result.strategy_name,
@@ -279,12 +326,19 @@ class BacktestLoop:
                 }
                 for t in best_result.trades
             ],
+            data_source=data_meta.get("source", "unknown"),
+            data_symbol=data_meta.get("symbol", "unknown"),
+            ai_insights_count=len(new_insights),
+            ai_adjustments=ai_adjustments,
         )
 
         with self._lock:
             self.all_cycle_results.append(cycle_result)
 
-        self.status = f"CYCLE {self.cycle_count} DONE — Best: {best_result.strategy_name} score={best_result.score:.0f}"
+        self.status = (f"CYCLE {self.cycle_count} DONE [{data_label}] — "
+                       f"Best: {best_result.strategy_name} score={best_result.score:.0f} | "
+                       f"AI: {len(new_insights)} new insights, "
+                       f"{self.analyzer.get_state()['active_insights']} active")
         return cycle_result
 
     def run_forever(self, callback=None):
@@ -301,6 +355,7 @@ class BacktestLoop:
                 print(f"  CYCLE {result.cycle_number}  |  TF={result.timeframe}m  |  "
                       f"{result.duration_seconds:.1f}s  |  "
                       f"Tested {result.num_strategies_tested} configs")
+                print(f"  DATA: {result.data_source} ({result.data_symbol})")
                 print(f"  BEST: {result.best_strategy}  "
                       f"Score={result.best_score:.0f}  "
                       f"P&L=${result.best_pnl:,.0f}  "
@@ -310,6 +365,25 @@ class BacktestLoop:
                 print(f"  GLOBAL BEST: {self.best_ever_strategy} "
                       f"Score={self.best_ever_score:.0f}")
                 print(f"  Population diversity: {result.population_diversity:.3f}")
+
+                # AI insights summary
+                ai_state = self.analyzer.get_state()
+                print(f"  AI BRAIN: {ai_state['total_trades_analyzed']} trades analyzed | "
+                      f"{ai_state['active_insights']} active insights | "
+                      f"{result.ai_insights_count} new this cycle")
+                if result.ai_adjustments:
+                    adj_str = ", ".join(f"{k}:{v:+.2f}" for k, v in result.ai_adjustments.items())
+                    print(f"  AI ADJUSTMENTS: {adj_str}")
+
+                # Print top insights
+                for ins in ai_state["insights"][:3]:
+                    conf_bar = "█" * int(ins["confidence"] * 10)
+                    print(f"  💡 [{ins['category']}] {ins['conclusion'][:80]} "
+                          f"(conf={ins['confidence']:.0%} {conf_bar})")
+
+                data_stats = self.data_feed.get_data_stats()
+                print(f"  DATA STATS: {data_stats['real_data_pct']:.0f}% real data, "
+                      f"{data_stats['cached_datasets']} cached sets")
                 print(f"{'='*70}")
 
                 if callback:
@@ -391,9 +465,18 @@ class BacktestLoop:
                     "sharpe": round(c.best_sharpe, 2),
                     "diversity": round(c.population_diversity, 3),
                     "duration": round(c.duration_seconds, 1),
+                    "data_source": c.data_source,
+                    "data_symbol": c.data_symbol,
+                    "ai_insights": c.ai_insights_count,
                 }
                 for c in self.all_cycle_results[-50:]  # Last 50 cycles
             ]
+
+            # AI analyzer state
+            ai_state = self.analyzer.get_state()
+
+            # Data feed stats
+            data_stats = self.data_feed.get_data_stats()
 
             return {
                 "status": self.status,
@@ -405,4 +488,7 @@ class BacktestLoop:
                 "result": result_data,
                 "cycle_history": cycle_history,
                 "best_params": self.best_ever_params.__dict__ if self.best_ever_params else {},
+                "data_meta": self.current_data_meta,
+                "data_stats": data_stats,
+                "ai": ai_state,
             }
