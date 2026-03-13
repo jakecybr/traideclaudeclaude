@@ -14,6 +14,7 @@ import numpy as np
 import json
 import os
 import time
+import threading
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
 
@@ -23,17 +24,92 @@ CACHE_DIR = Path(__file__).parent / "data_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 
-# Yahoo Finance API endpoints (public, no auth needed)
-YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-YAHOO_SPARK_URL = "https://query1.finance.yahoo.com/v8/finance/spark"
+# Yahoo Finance API endpoints
+YAHOO_CHART_URL = "https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
+YAHOO_CRUMB_URL = "https://query2.finance.yahoo.com/v1/test/getcrumb"
 
 # Symbols to try, in order of preference
 NQ_SYMBOLS = ["NQ=F", "QQQ", "TQQQ", "^NDX"]
 
 # User agent to avoid blocks
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
 }
+
+
+class YahooSession:
+    """
+    Manages a Yahoo Finance session with cookies and crumb token.
+    Yahoo requires a valid crumb for API access; without it you get 429s.
+    """
+    _instance = None
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update(HEADERS)
+        self.crumb: Optional[str] = None
+        self._initialized = False
+
+    @classmethod
+    def get(cls) -> "YahooSession":
+        """Get or create the singleton session."""
+        if cls._instance is None or not cls._instance._initialized:
+            with cls._lock:
+                if cls._instance is None or not cls._instance._initialized:
+                    cls._instance = cls()
+                    cls._instance._init_session()
+        return cls._instance
+
+    def _init_session(self):
+        """Initialize session: get cookies from Yahoo, then fetch crumb."""
+        try:
+            # Step 1: Visit Yahoo Finance to get cookies
+            print("  [DATA] Initializing Yahoo Finance session...")
+            consent_resp = self.session.get(
+                "https://fc.yahoo.com", timeout=10, allow_redirects=True
+            )
+            # Step 2: Get crumb token using the cookies from step 1
+            crumb_resp = self.session.get(YAHOO_CRUMB_URL, timeout=10)
+            crumb_resp.raise_for_status()
+            self.crumb = crumb_resp.text.strip()
+            if self.crumb:
+                print(f"  [DATA] Yahoo session initialized (crumb: {self.crumb[:8]}...)")
+                self._initialized = True
+            else:
+                print("  [DATA] WARNING: Empty crumb received")
+        except Exception as e:
+            print(f"  [DATA] WARNING: Failed to init Yahoo session: {e}")
+            self._initialized = False
+
+    def reset(self):
+        """Reset the session (e.g., if crumb expired)."""
+        self._initialized = False
+        self.session = requests.Session()
+        self.session.headers.update(HEADERS)
+        self.crumb = None
+        self._init_session()
+
+    def fetch_chart(self, symbol: str, params: dict) -> requests.Response:
+        """Fetch chart data with crumb and retry on 401/403."""
+        if self.crumb:
+            params["crumb"] = self.crumb
+
+        url = YAHOO_CHART_URL.format(symbol=symbol)
+        resp = self.session.get(url, params=params, timeout=15)
+
+        # If unauthorized, re-init session and retry once
+        if resp.status_code in (401, 403, 429) and self._initialized:
+            print(f"  [DATA] Got {resp.status_code}, refreshing session...")
+            time.sleep(2)
+            self.reset()
+            if self.crumb:
+                params["crumb"] = self.crumb
+            resp = self.session.get(url, params=params, timeout=15)
+
+        return resp
 
 
 def fetch_yahoo_chart(symbol: str, interval: str = "5m", range_str: str = "5d",
@@ -62,10 +138,9 @@ def fetch_yahoo_chart(symbol: str, interval: str = "5m", range_str: str = "5d",
     else:
         params["range"] = range_str
 
-    url = YAHOO_CHART_URL.format(symbol=symbol)
-
     try:
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        yahoo = YahooSession.get()
+        resp = yahoo.fetch_chart(symbol, params)
         resp.raise_for_status()
         data = resp.json()
 
@@ -137,7 +212,7 @@ def fetch_real_nq_data(interval: str = "5m", range_str: str = "5d") -> Optional[
             df.attrs["interval"] = interval
             df.attrs["source"] = "Yahoo Finance (REAL)"
             return df
-        time.sleep(0.5)  # Rate limit courtesy
+        time.sleep(1.5)  # Rate limit courtesy
 
     print("  [DATA] All symbols failed")
     return None
