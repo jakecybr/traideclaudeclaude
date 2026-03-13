@@ -1,6 +1,8 @@
 """
 Real Market Data Feed for NQ Futures
 
+DEPRECATED: Use data_lake.py and data_workers.py instead. Kept for YahooSession utilities.
+
 Fetches REAL historical data from Yahoo Finance API (no yfinance dependency).
 Supports NQ=F (NQ futures), QQQ (Nasdaq-100 ETF), and TQQQ as data sources.
 Falls back gracefully: NQ futures -> QQQ -> cached data -> synthetic supplement.

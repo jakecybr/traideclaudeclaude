@@ -174,7 +174,11 @@ class AITradeAnalyzer:
 
     Maintains a growing knowledge base of insights derived from
     statistical analysis of trade outcomes across different market conditions.
+    Now includes cross-instrument correlation analysis, NQ directional opinion,
+    and overfit detection.
     """
+
+    MAX_ANALYSES = 5000  # Cap to prevent unbounded memory growth
 
     def __init__(self):
         self.all_analyses: List[TradeAnalysis] = []
@@ -195,13 +199,21 @@ class AITradeAnalyzer:
         self.holding_periods: List[int] = []
         self.efficiency_scores: List[float] = []
 
-    def analyze_cycle(self, result: BacktestResult, bars: pd.DataFrame) -> List[Insight]:
+        # Cross-instrument correlation data
+        self.correlation_data: Dict = {}
+
+    def analyze_cycle(self, result: BacktestResult, bars: pd.DataFrame,
+                      correlations: Optional[Dict] = None) -> List[Insight]:
         """
         Analyze all trades from a backtest cycle.
         Returns new insights generated.
         """
         self.cycle_count += 1
         new_insights = []
+
+        # Store correlation data if provided
+        if correlations:
+            self.correlation_data = correlations
 
         if not result.trades or len(result.trades) < 3:
             return new_insights
@@ -215,6 +227,10 @@ class AITradeAnalyzer:
                 self.all_analyses.append(analysis)
                 self._update_stats(analysis)
 
+        # Cap memory growth
+        if len(self.all_analyses) > self.MAX_ANALYSES:
+            self.all_analyses = self.all_analyses[-self.MAX_ANALYSES:]
+
         if len(cycle_analyses) < 3:
             return new_insights
 
@@ -224,6 +240,8 @@ class AITradeAnalyzer:
         new_insights.extend(self._detect_risk_patterns())
         new_insights.extend(self._detect_strategy_patterns())
         new_insights.extend(self._detect_fractal_patterns(bars))
+        new_insights.extend(self._detect_cross_instrument_patterns())
+        new_insights.extend(self._detect_overfit_patterns(result))
 
         # Validate existing insights against this cycle
         self._validate_insights(cycle_analyses)
@@ -738,6 +756,180 @@ class AITradeAnalyzer:
                 return stats1[key] == stats2[key]
         return False
 
+    def _detect_cross_instrument_patterns(self) -> List[Insight]:
+        """Detect cross-instrument correlation patterns."""
+        insights = []
+        if not self.correlation_data:
+            return insights
+
+        nq_corrs = self.correlation_data.get("nq_correlations", [])
+        if not nq_corrs:
+            return insights
+
+        # Highlight highly correlated instruments
+        high_corr = [c for c in nq_corrs if abs(c.get("correlation", 0)) > 0.7]
+        if high_corr:
+            top = high_corr[:3]
+            names = ", ".join(f"{c['instrument']} ({c['correlation']:.2f})" for c in top)
+            insights.append(self._create_insight(
+                "CROSS_INSTRUMENT",
+                f"Top NQ-correlated instruments: {names} — patterns in these may predict NQ moves",
+                confidence=0.65,
+                sample_size=len(high_corr),
+                stats={"top_correlated": [c["instrument"] for c in top]},
+                adjustments={}
+            ))
+
+        # Pattern match insights
+        matches = self.correlation_data.get("pattern_matches", [])
+        if matches:
+            bullish = [m for m in matches if m.get("subsequent_move_pct", 0) > 0.5]
+            bearish = [m for m in matches if m.get("subsequent_move_pct", 0) < -0.5]
+            if len(bullish) > len(bearish) and bullish:
+                insights.append(self._create_insight(
+                    "CROSS_INSTRUMENT",
+                    f"Cross-instrument pattern matching: {len(bullish)} similar patterns had bullish outcomes vs {len(bearish)} bearish",
+                    confidence=min(0.7, 0.4 + len(bullish) / 10),
+                    sample_size=len(matches),
+                    stats={"bullish_matches": len(bullish), "bearish_matches": len(bearish)},
+                    adjustments={}
+                ))
+            elif len(bearish) > len(bullish) and bearish:
+                insights.append(self._create_insight(
+                    "CROSS_INSTRUMENT",
+                    f"Cross-instrument pattern matching: {len(bearish)} similar patterns had bearish outcomes vs {len(bullish)} bullish",
+                    confidence=min(0.7, 0.4 + len(bearish) / 10),
+                    sample_size=len(matches),
+                    stats={"bullish_matches": len(bullish), "bearish_matches": len(bearish)},
+                    adjustments={}
+                ))
+
+        return insights
+
+    def _detect_overfit_patterns(self, result: BacktestResult) -> List[Insight]:
+        """Flag potential overfitting patterns."""
+        insights = []
+
+        if result.win_rate >= 0.95 and result.total_trades >= 5:
+            insights.append(self._create_insight(
+                "OVERFIT",
+                f"Possible overfitting: {result.win_rate:.0%} win rate across {result.total_trades} trades is unrealistic",
+                confidence=0.85,
+                sample_size=result.total_trades,
+                stats={"win_rate": result.win_rate, "trades": result.total_trades},
+                adjustments={}
+            ))
+
+        # All trades same direction
+        if result.trades and len(result.trades) >= 5:
+            directions = set(t.direction for t in result.trades)
+            if len(directions) == 1 and result.win_rate > 0.8:
+                insights.append(self._create_insight(
+                    "OVERFIT",
+                    f"All {len(result.trades)} trades are {list(directions)[0]} with {result.win_rate:.0%} WR — may be fitting to trend direction",
+                    confidence=0.7,
+                    sample_size=result.total_trades,
+                    stats={"direction": list(directions)[0], "win_rate": result.win_rate},
+                    adjustments={}
+                ))
+
+        # MFE/MAE suspiciously high
+        if result.avg_mfe > 0 and result.avg_mae > 0:
+            ratio = result.avg_mfe / (result.avg_mae + 0.01)
+            if ratio > 10 and result.total_trades >= 5:
+                insights.append(self._create_insight(
+                    "OVERFIT",
+                    f"Suspiciously high MFE/MAE ratio ({ratio:.1f}x) — trades may be fitting to known price movements",
+                    confidence=0.75,
+                    sample_size=result.total_trades,
+                    stats={"mfe_mae_ratio": ratio},
+                    adjustments={}
+                ))
+
+        return insights
+
+    def get_nq_opinion(self) -> Dict:
+        """Synthesize a directional opinion on NQ."""
+        # Gather signal components
+        direction_signals = []
+        reasoning = []
+        best_strategies = []
+
+        # From strategy stats
+        for strat, stats in self.stats_by_strategy.items():
+            if stats["count"] >= 10:
+                wr = stats["wins"] / stats["count"]
+                avg_pnl = stats["pnl"] / stats["count"]
+                if avg_pnl > 0:
+                    best_strategies.append({"name": strat, "win_rate": round(wr, 2), "avg_pnl": round(avg_pnl, 0)})
+
+        best_strategies.sort(key=lambda x: x["avg_pnl"], reverse=True)
+
+        # From direction stats
+        for direction, stats in self.stats_by_direction.items():
+            if stats["count"] >= 10:
+                wr = stats["wins"] / stats["count"]
+                if direction == "LONG" and wr > 0.55:
+                    direction_signals.append(1)
+                    reasoning.append(f"LONG trades winning {wr:.0%}")
+                elif direction == "LONG" and wr < 0.45:
+                    direction_signals.append(-1)
+                    reasoning.append(f"LONG trades losing {wr:.0%}")
+                elif direction == "SHORT" and wr > 0.55:
+                    direction_signals.append(-1)
+                    reasoning.append(f"SHORT trades winning {wr:.0%}")
+                elif direction == "SHORT" and wr < 0.45:
+                    direction_signals.append(1)
+                    reasoning.append(f"SHORT trades losing {wr:.0%}")
+
+        # From correlation data
+        regimes = self.correlation_data.get("instrument_regimes", {})
+        nq_regime = regimes.get("NQ=F") or regimes.get("QQQ") or {}
+        if nq_regime:
+            if nq_regime.get("trend") in ("STRONG_UP", "UP"):
+                direction_signals.append(1)
+                reasoning.append(f"NQ trend: {nq_regime.get('trend')}")
+            elif nq_regime.get("trend") in ("STRONG_DOWN", "DOWN"):
+                direction_signals.append(-1)
+                reasoning.append(f"NQ trend: {nq_regime.get('trend')}")
+            if nq_regime.get("momentum") == "BULLISH":
+                direction_signals.append(0.5)
+            elif nq_regime.get("momentum") == "BEARISH":
+                direction_signals.append(-0.5)
+
+        # Compute aggregate
+        if direction_signals:
+            avg_signal = np.mean(direction_signals)
+            confidence = min(0.9, abs(avg_signal) * 0.7 + len(direction_signals) * 0.05)
+        else:
+            avg_signal = 0
+            confidence = 0
+
+        if avg_signal > 0.2:
+            direction = "BULLISH"
+        elif avg_signal < -0.2:
+            direction = "BEARISH"
+        else:
+            direction = "NEUTRAL"
+
+        # Correlated signals
+        corr_signals = []
+        nq_corrs = self.correlation_data.get("nq_correlations", [])
+        for c in nq_corrs[:5]:
+            inst = c.get("instrument", "")
+            regime = regimes.get(inst, {})
+            if regime:
+                corr_signals.append(f"{inst}: {regime.get('trend', '?')} ({c.get('correlation', 0):.2f})")
+
+        return {
+            "direction": direction,
+            "confidence": round(confidence, 2),
+            "reasoning": reasoning[:5],
+            "best_strategies": best_strategies[:5],
+            "regime": nq_regime if nq_regime else {"trend": "UNKNOWN", "volatility": "UNKNOWN", "momentum": "UNKNOWN"},
+            "correlated_signals": corr_signals[:5],
+        }
+
     def get_param_adjustments(self) -> Dict[str, float]:
         """
         Aggregate parameter adjustments from all active, high-confidence insights.
@@ -803,4 +995,21 @@ class AITradeAnalyzer:
             "param_adjustments": self.get_param_adjustments(),
             "avg_efficiency": round(np.mean(self.efficiency_scores[-200:]), 3) if self.efficiency_scores else 0,
             "avg_mfe_mae_ratio": round(np.mean(self.mfe_mae_ratios[-200:]), 2) if self.mfe_mae_ratios else 0,
+            "nq_opinion": self.get_nq_opinion(),
+            "cross_instrument_insights": [
+                {
+                    "id": i.id,
+                    "conclusion": i.conclusion,
+                    "confidence": round(i.confidence, 2),
+                }
+                for i in active_insights if i.category == "CROSS_INSTRUMENT"
+            ],
+            "overfit_warnings": [
+                {
+                    "id": i.id,
+                    "conclusion": i.conclusion,
+                    "confidence": round(i.confidence, 2),
+                }
+                for i in active_insights if i.category == "OVERFIT"
+            ],
         }

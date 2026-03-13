@@ -2,13 +2,15 @@
 Web Dashboard for NQ Fractal AI Trading Backtester
 
 Real-time visualization of:
-- Data source indicator (REAL vs synthetic)
+- Multi-source data lake status and worker monitoring
+- NQ AI Opinion panel with directional arrow and confidence
+- All-Markets monitor with correlation heatmap
 - Candlestick chart with trade entries/exits
-- Equity curve
+- Equity curve and optimization progress
 - AI Brain: insights, conclusions, learning progress
+- Bias mitigation: in-sample vs OOS, overfit detection
 - Regime analysis heatmap
 - Strategy performance comparison
-- Optimization progress across cycles
 - Trade log with full details
 - Parameter evolution
 """
@@ -65,6 +67,7 @@ DASHBOARD_HTML = """
         }
         .data-real { background: #00d4aa33; color: #00d4aa; border: 1px solid #00d4aa; }
         .data-synthetic { background: #ff475733; color: #ff4757; border: 1px solid #ff4757; }
+        .data-multi { background: #a78bfa33; color: #a78bfa; border: 1px solid #a78bfa; }
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
@@ -79,7 +82,7 @@ DASHBOARD_HTML = """
         }
         .stat-card {
             flex: 1;
-            min-width: 110px;
+            min-width: 100px;
             background: #111827;
             border: 1px solid #1e2d4a;
             border-radius: 4px;
@@ -101,6 +104,7 @@ DASHBOARD_HTML = """
         .negative { color: #ff4757; }
         .neutral { color: #ffd700; }
         .ai-color { color: #a78bfa; }
+        .overfit-color { color: #ff6b6b; }
         .grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -135,8 +139,94 @@ DASHBOARD_HTML = """
             font-size: 9px;
             margin-left: 8px;
         }
+        .chart-container h3 .overfit-badge {
+            background: #ff6b6b22;
+            color: #ff6b6b;
+            border: 1px solid #ff6b6b55;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 9px;
+            margin-left: 8px;
+        }
 
-        /* AI Insights panel */
+        /* NQ Opinion panel */
+        .nq-opinion-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+            gap: 8px;
+            padding: 8px;
+        }
+        .opinion-box {
+            background: #0d1321;
+            border-radius: 4px;
+            padding: 10px;
+            text-align: center;
+        }
+        .opinion-arrow {
+            font-size: 40px;
+            line-height: 1;
+        }
+        .opinion-label {
+            font-size: 9px;
+            color: #5a6e8a;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+        .opinion-value {
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .opinion-list {
+            list-style: none;
+            padding: 0;
+            font-size: 10px;
+            text-align: left;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+        .opinion-list li {
+            padding: 2px 0;
+            border-bottom: 1px solid #1a2744;
+        }
+
+        /* Markets monitor grid */
+        .markets-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 4px;
+            padding: 8px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .market-cell {
+            background: #0d1321;
+            border-radius: 3px;
+            padding: 6px;
+            text-align: center;
+            font-size: 10px;
+        }
+        .market-cell .ticker { font-weight: bold; font-size: 11px; }
+        .market-cell .trend-arrow { font-size: 14px; }
+        .market-cell .corr-val { font-size: 9px; color: #5a6e8a; }
+
+        /* Worker status */
+        .workers-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 4px;
+            padding: 8px;
+        }
+        .worker-card {
+            background: #0d1321;
+            border-radius: 3px;
+            padding: 8px;
+            font-size: 10px;
+        }
+        .worker-card .wname { font-weight: bold; color: #00d4aa; font-size: 11px; }
+        .worker-card .wstat { color: #5a6e8a; }
+
+        /* Insights panel */
         .insights-panel {
             max-height: 380px;
             overflow-y: auto;
@@ -149,13 +239,9 @@ DASHBOARD_HTML = """
             margin-bottom: 6px;
             border-radius: 0 4px 4px 0;
         }
-        .insight-card.validated {
-            border-left-color: #00d4aa;
-        }
-        .insight-card.low-conf {
-            border-left-color: #5a6e8a;
-            opacity: 0.7;
-        }
+        .insight-card.validated { border-left-color: #00d4aa; }
+        .insight-card.low-conf { border-left-color: #5a6e8a; opacity: 0.7; }
+        .insight-card.overfit { border-left-color: #ff6b6b; }
         .insight-category {
             font-size: 9px;
             color: #a78bfa;
@@ -265,8 +351,8 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="header">
-        <h1>NQ FRACTAL AI BACKTESTER</h1>
-        <span id="dataBadge" class="data-badge data-real">REAL DATA</span>
+        <h1>NQ FRACTAL AI BACKTESTER — MULTI-SOURCE</h1>
+        <span id="dataBadge" class="data-badge data-multi">MULTI-SOURCE</span>
         <div class="status" id="status">INITIALIZING...</div>
     </div>
 
@@ -276,7 +362,7 @@ DASHBOARD_HTML = """
             <div class="value neutral" id="statCycle">0</div>
         </div>
         <div class="stat-card">
-            <div class="label">Symbol</div>
+            <div class="label">Instrument</div>
             <div class="value neutral" id="statSymbol">--</div>
         </div>
         <div class="stat-card">
@@ -284,8 +370,12 @@ DASHBOARD_HTML = """
             <div class="value neutral" id="statStrategy">&mdash;</div>
         </div>
         <div class="stat-card">
-            <div class="label">Score</div>
+            <div class="label">Score (IS)</div>
             <div class="value neutral" id="statScore">0</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Score (OOS)</div>
+            <div class="value neutral" id="statOOS">0</div>
         </div>
         <div class="stat-card">
             <div class="label">P&amp;L</div>
@@ -319,11 +409,37 @@ DASHBOARD_HTML = """
             <div class="label">All-Time Best</div>
             <div class="value positive" id="statBestEver">0</div>
         </div>
+        <div class="stat-card">
+            <div class="label">Data Lake</div>
+            <div class="value ai-color" id="statLake">0 inst</div>
+        </div>
     </div>
 
     <div class="grid">
+        <!-- NQ AI OPINION -->
         <div class="chart-container grid-full">
-            <h3>NQ Price Action & Trades <span id="chartDataLabel" class="ai-badge">REAL DATA</span></h3>
+            <h3>NQ/SP500 AI Trading Intelligence <span class="ai-badge">AI OPINION</span></h3>
+            <div class="nq-opinion-grid" id="nqOpinionPanel">
+                <div class="opinion-box"><p style="color:#5a6e8a;font-size:11px;">Accumulating data...</p></div>
+            </div>
+        </div>
+
+        <!-- ALL-MARKETS MONITOR -->
+        <div class="chart-container grid-full">
+            <h3>All-Markets Monitor <span class="ai-badge">LIVE</span></h3>
+            <div class="markets-grid" id="marketsMonitor">
+                <p style="color:#5a6e8a;padding:8px;font-size:11px;">Waiting for correlation data...</p>
+            </div>
+        </div>
+
+        <!-- DATA LAKE & WORKERS -->
+        <div class="chart-container grid-full">
+            <h3>Data Lake & Workers <span class="ai-badge" id="workerBadge">0 workers</span></h3>
+            <div class="workers-grid" id="workersPanel"></div>
+        </div>
+
+        <div class="chart-container grid-full">
+            <h3>Price Action & Trades <span id="chartDataLabel" class="ai-badge">REAL DATA</span></h3>
             <div id="priceChart" style="height:420px;"></div>
         </div>
 
@@ -335,6 +451,17 @@ DASHBOARD_HTML = """
         <div class="chart-container">
             <h3>Optimization Progress</h3>
             <div id="progressChart" style="height:250px;"></div>
+        </div>
+
+        <!-- BIAS MITIGATION -->
+        <div class="chart-container grid-full">
+            <h3>Bias Mitigation &mdash; Walk-Forward Validation <span class="overfit-badge" id="overfitBadge"></span></h3>
+            <div style="display:grid; grid-template-columns: 2fr 1fr; gap: 8px;">
+                <div id="oosChart" style="height:250px;"></div>
+                <div id="overfitWarnings" style="max-height:250px;overflow-y:auto;padding:8px;">
+                    <p style="color:#5a6e8a;font-size:11px;">No overfit warnings yet.</p>
+                </div>
+            </div>
         </div>
 
         <!-- AI BRAIN PANEL -->
@@ -407,6 +534,22 @@ DASHBOARD_HTML = """
         return '#ff475722';
     }
 
+    function corrColor(c) {
+        if (c > 0.7) return '#00d4aa';
+        if (c > 0.3) return '#7bed9f';
+        if (c > -0.3) return '#5a6e8a';
+        if (c > -0.7) return '#ffd700';
+        return '#ff4757';
+    }
+
+    function trendArrow(t) {
+        if (t === 'STRONG_UP') return '<span style="color:#00d4aa;">&#9650;&#9650;</span>';
+        if (t === 'UP') return '<span style="color:#7bed9f;">&#9650;</span>';
+        if (t === 'STRONG_DOWN') return '<span style="color:#ff4757;">&#9660;&#9660;</span>';
+        if (t === 'DOWN') return '<span style="color:#ffd700;">&#9660;</span>';
+        return '<span style="color:#5a6e8a;">&#9644;</span>';
+    }
+
     async function refresh() {
         try {
             const resp = await fetch('/api/state');
@@ -423,14 +566,30 @@ DASHBOARD_HTML = """
             document.getElementById('statStrategy').textContent = data.result.strategy;
             document.getElementById('statScore').textContent = data.result.score.toFixed(0);
 
+            // OOS score from latest cycle
+            const latestCycle = data.cycle_history && data.cycle_history.length > 0 ?
+                data.cycle_history[data.cycle_history.length - 1] : null;
+            if (latestCycle) {
+                const oosEl = document.getElementById('statOOS');
+                oosEl.textContent = (latestCycle.oos_score || 0).toFixed(0);
+                oosEl.className = 'value ' + (latestCycle.overfit_flag ? 'negative' : 'positive');
+            }
+
             // Data source indicator
             const dm = data.data_meta || {};
-            const isReal = dm.is_real !== false;
             const badge = document.getElementById('dataBadge');
-            badge.textContent = isReal ? 'REAL DATA' : 'SYNTHETIC';
-            badge.className = 'data-badge ' + (isReal ? 'data-real' : 'data-synthetic');
+            if (dm.is_normalized) {
+                badge.textContent = 'MULTI-SOURCE';
+                badge.className = 'data-badge data-multi';
+            } else if (dm.is_real !== false) {
+                badge.textContent = 'REAL DATA';
+                badge.className = 'data-badge data-real';
+            } else {
+                badge.textContent = 'SYNTHETIC';
+                badge.className = 'data-badge data-synthetic';
+            }
 
-            const sym = dm.symbol || data.data_stats && 'NQ' || '--';
+            const sym = dm.instrument || dm.symbol || '--';
             document.getElementById('statSymbol').textContent = sym;
 
             const chartLabel = document.getElementById('chartDataLabel');
@@ -454,12 +613,21 @@ DASHBOARD_HTML = """
             const ai = data.ai || {};
             document.getElementById('statInsights').textContent = (ai.active_insights || 0) + ' active';
 
+            // Data lake stats
+            const ds = data.data_stats || {};
+            document.getElementById('statLake').textContent = (ds.total_instruments || 0) + ' inst / ' + (ds.total_files || 0) + ' files';
+
             // Only redraw charts if cycle changed
             if (data.cycle_count !== lastCycle) {
                 lastCycle = data.cycle_count;
+                drawNQOpinion(data);
+                drawMarketsMonitor(data);
+                drawWorkersPanel(data);
                 drawPriceChart(data);
                 drawEquityChart(data);
                 drawProgressChart(data);
+                drawOOSChart(data);
+                drawOverfitWarnings(data);
                 drawAIInsights(data);
                 drawRegimeGrid(data);
                 drawSessionGrid(data);
@@ -472,6 +640,117 @@ DASHBOARD_HTML = """
             console.error('Refresh error:', e);
         }
         setTimeout(refresh, REFRESH_MS);
+    }
+
+    function drawNQOpinion(data) {
+        const ai = data.ai || {};
+        const opinion = ai.nq_opinion || {};
+        const dir = opinion.direction || 'NEUTRAL';
+        const conf = opinion.confidence || 0;
+
+        let arrowHtml, arrowColor;
+        if (dir === 'BULLISH') { arrowHtml = '&#9650;'; arrowColor = '#00d4aa'; }
+        else if (dir === 'BEARISH') { arrowHtml = '&#9660;'; arrowColor = '#ff4757'; }
+        else { arrowHtml = '&#9644;'; arrowColor = '#ffd700'; }
+
+        const regime = opinion.regime || {};
+        const reasoning = opinion.reasoning || [];
+        const bestStrats = opinion.best_strategies || [];
+        const corrSignals = opinion.correlated_signals || [];
+
+        let html = `
+        <div class="opinion-box">
+            <div class="opinion-label">AI NQ Direction</div>
+            <div class="opinion-arrow" style="color:${arrowColor};">${arrowHtml}</div>
+            <div class="opinion-value" style="color:${arrowColor};">${dir}</div>
+            <div style="margin-top:4px;font-size:10px;color:#5a6e8a;">Confidence: ${(conf*100).toFixed(0)}%</div>
+            <div style="width:100%;height:4px;background:#1a2744;border-radius:2px;margin-top:4px;">
+                <div style="width:${conf*100}%;height:100%;background:${arrowColor};border-radius:2px;"></div>
+            </div>
+        </div>
+        <div class="opinion-box">
+            <div class="opinion-label">Best Strategies</div>
+            <ul class="opinion-list">
+                ${bestStrats.map(s => `<li>${s.name}: ${(s.win_rate*100).toFixed(0)}% WR, $${s.avg_pnl}/t</li>`).join('')}
+                ${bestStrats.length === 0 ? '<li style="color:#5a6e8a;">Accumulating...</li>' : ''}
+            </ul>
+        </div>
+        <div class="opinion-box">
+            <div class="opinion-label">NQ Regime</div>
+            <div style="font-size:12px;margin:4px 0;">
+                Trend: ${trendArrow(regime.trend || 'FLAT')} <b>${regime.trend || '?'}</b><br>
+                Vol: <b>${regime.volatility || '?'}</b><br>
+                Mom: <b>${regime.momentum || '?'}</b>
+            </div>
+        </div>
+        <div class="opinion-box">
+            <div class="opinion-label">Reasoning</div>
+            <ul class="opinion-list">
+                ${reasoning.map(r => `<li>${r}</li>`).join('')}
+                ${corrSignals.map(s => `<li style="color:#a78bfa;">${s}</li>`).join('')}
+                ${reasoning.length === 0 && corrSignals.length === 0 ? '<li style="color:#5a6e8a;">Building opinion...</li>' : ''}
+            </ul>
+        </div>`;
+        document.getElementById('nqOpinionPanel').innerHTML = html;
+    }
+
+    function drawMarketsMonitor(data) {
+        const corr = data.correlations || {};
+        const regimes = corr.instrument_regimes || {};
+        const nqCorrs = corr.nq_correlations || [];
+
+        if (Object.keys(regimes).length === 0 && nqCorrs.length === 0) {
+            document.getElementById('marketsMonitor').innerHTML =
+                '<p style="color:#5a6e8a;padding:8px;font-size:11px;">Waiting for multi-instrument data...</p>';
+            return;
+        }
+
+        // Build a map of NQ correlations
+        const corrMap = {};
+        for (const c of nqCorrs) { corrMap[c.instrument] = c.correlation; }
+
+        let html = '';
+        // Sort instruments: NQ-correlated first
+        const allInsts = Object.keys(regimes);
+        allInsts.sort((a, b) => Math.abs(corrMap[b] || 0) - Math.abs(corrMap[a] || 0));
+
+        for (const inst of allInsts) {
+            const r = regimes[inst];
+            const c = corrMap[inst] || 0;
+            const borderColor = corrColor(c);
+            html += `<div class="market-cell" style="border:1px solid ${borderColor}44;">
+                <div class="ticker" style="color:${borderColor};">${inst}</div>
+                <div class="trend-arrow">${trendArrow(r.trend)}</div>
+                <div style="font-size:9px;">${r.volatility} vol | ${r.momentum}</div>
+                <div class="corr-val">NQ corr: <b style="color:${borderColor};">${c.toFixed(2)}</b></div>
+            </div>`;
+        }
+        document.getElementById('marketsMonitor').innerHTML = html || '<p style="color:#5a6e8a;padding:8px;">No instruments.</p>';
+    }
+
+    function drawWorkersPanel(data) {
+        const workers = data.workers || [];
+        const ds = data.data_stats || {};
+
+        let html = `<div class="worker-card">
+            <div class="wname">DATA LAKE</div>
+            <div class="wstat">Instruments: <b>${ds.total_instruments || 0}</b></div>
+            <div class="wstat">Files: <b>${ds.total_files || 0}</b></div>
+            <div class="wstat">Size: <b>${(ds.total_mb || 0).toFixed(1)} MB</b></div>
+            <div class="wstat">Sources: ${(ds.sources || []).join(', ') || 'none'}</div>
+        </div>`;
+
+        for (const w of workers) {
+            const statusColor = w.status === 'running' ? '#00d4aa' : '#ff4757';
+            const uptime = w.uptime ? (w.uptime / 60).toFixed(0) + 'm' : '0m';
+            html += `<div class="worker-card">
+                <div class="wname">${w.name} <span style="color:${statusColor};">&#9679;</span></div>
+                <div class="wstat">Fetches: ${w.total_fetches} | Bars: ${w.total_bars}</div>
+                <div class="wstat">Errors: ${w.errors} | Up: ${uptime}</div>
+            </div>`;
+        }
+        document.getElementById('workersPanel').innerHTML = html;
+        document.getElementById('workerBadge').textContent = workers.length + ' workers';
     }
 
     function drawPriceChart(data) {
@@ -496,7 +775,7 @@ DASHBOARD_HTML = """
             close: closes,
             increasing: {line: {color: '#00d4aa'}, fillcolor: '#00d4aa44'},
             decreasing: {line: {color: '#ff4757'}, fillcolor: '#ff475744'},
-            name: 'NQ',
+            name: 'Price',
             yaxis: 'y2',
         }, {
             type: 'bar',
@@ -570,7 +849,7 @@ DASHBOARD_HTML = """
             margin: {l: 50, r: 20, t: 10, b: 30},
             xaxis: {gridcolor: '#1a2744', rangeslider: {visible: false}},
             yaxis: {domain: [0, 0.15], gridcolor: '#1a2744', title: 'Vol'},
-            yaxis2: {domain: [0.18, 1], gridcolor: '#1a2744', title: 'NQ Price'},
+            yaxis2: {domain: [0.18, 1], gridcolor: '#1a2744', title: 'Price'},
             legend: {orientation: 'h', y: 1.02, x: 0, font: {size: 10}},
             dragmode: 'pan',
         };
@@ -617,16 +896,15 @@ DASHBOARD_HTML = """
         const traces = [{
             type: 'scatter', x: x, y: hist.map(h => h.score),
             mode: 'lines+markers', line: {color: '#ffd700', width: 2},
-            marker: {size: 4}, name: 'Best Score', yaxis: 'y2',
+            marker: {size: 4}, name: 'In-Sample Score', yaxis: 'y2',
+        }, {
+            type: 'scatter', x: x, y: hist.map(h => h.oos_score || 0),
+            mode: 'lines+markers', line: {color: '#a78bfa', width: 2, dash: 'dash'},
+            marker: {size: 4}, name: 'OOS Score', yaxis: 'y2',
         }, {
             type: 'scatter', x: x, y: hist.map(h => h.pnl),
             mode: 'lines', line: {color: '#00d4aa', width: 1},
             name: 'P&L', yaxis: 'y',
-        }, {
-            type: 'scatter', x: x,
-            y: hist.map(h => (h.ai_insights || 0)),
-            mode: 'markers', marker: {color: '#a78bfa', size: 6, symbol: 'star'},
-            name: 'AI Insights', yaxis: 'y2',
         }];
 
         const layout = {
@@ -639,6 +917,62 @@ DASHBOARD_HTML = """
             xaxis: {gridcolor: '#1a2744', title: 'Cycle'},
         };
         Plotly.newPlot('progressChart', traces, layout, {responsive: true});
+    }
+
+    function drawOOSChart(data) {
+        const hist = data.cycle_history || [];
+        if (hist.length === 0) return;
+
+        const x = hist.map(h => h.cycle);
+        const isScores = hist.map(h => h.score);
+        const oosScores = hist.map(h => h.oos_score || 0);
+        const overfits = hist.map(h => h.overfit_flag ? h.score : null);
+
+        const traces = [{
+            type: 'scatter', x: x, y: isScores,
+            mode: 'lines', line: {color: '#ffd700', width: 2},
+            name: 'In-Sample',
+        }, {
+            type: 'scatter', x: x, y: oosScores,
+            mode: 'lines', line: {color: '#a78bfa', width: 2},
+            name: 'Out-of-Sample',
+        }, {
+            type: 'scatter', x: x, y: overfits,
+            mode: 'markers', marker: {color: '#ff6b6b', size: 10, symbol: 'x'},
+            name: 'Overfit Flag',
+        }];
+
+        const layout = {
+            paper_bgcolor: '#111827', plot_bgcolor: '#0a0e17',
+            font: {color: '#5a6e8a', size: 10},
+            margin: {l: 50, r: 20, t: 10, b: 30},
+            legend: {orientation: 'h', y: 1.05, font: {size: 9}},
+            yaxis: {gridcolor: '#1a2744', title: 'Score'},
+            xaxis: {gridcolor: '#1a2744', title: 'Cycle'},
+        };
+        Plotly.newPlot('oosChart', traces, layout, {responsive: true});
+
+        // Update overfit badge
+        const overfitCount = hist.filter(h => h.overfit_flag).length;
+        const badge = document.getElementById('overfitBadge');
+        badge.textContent = overfitCount > 0 ? overfitCount + ' overfit detections' : 'CLEAN';
+        badge.style.color = overfitCount > 0 ? '#ff6b6b' : '#00d4aa';
+    }
+
+    function drawOverfitWarnings(data) {
+        const warnings = data.overfit_warnings || [];
+        if (warnings.length === 0) {
+            document.getElementById('overfitWarnings').innerHTML =
+                '<p style="color:#5a6e8a;font-size:11px;padding:4px;">No overfit warnings. Walk-forward validation passing.</p>';
+            return;
+        }
+        let html = '<div style="font-size:10px;color:#ff6b6b;margin-bottom:8px;">OVERFIT ALERTS</div>';
+        for (const w of warnings.slice().reverse()) {
+            html += `<div style="background:#ff6b6b11;border-left:2px solid #ff6b6b;padding:6px 8px;margin-bottom:4px;border-radius:0 3px 3px 0;font-size:10px;">
+                ${w}
+            </div>`;
+        }
+        document.getElementById('overfitWarnings').innerHTML = html;
     }
 
     function drawAIInsights(data) {
@@ -658,12 +992,13 @@ DASHBOARD_HTML = """
 
         for (const ins of ai.insights) {
             const confPx = Math.round(ins.confidence * 80);
-            const cardClass = ins.validated ? 'validated' : (ins.confidence < 0.5 ? 'low-conf' : '');
+            let cardClass = ins.validated ? 'validated' : (ins.confidence < 0.5 ? 'low-conf' : '');
+            if (ins.category === 'OVERFIT') cardClass = 'overfit';
             html += `<div class="insight-card ${cardClass}">
-                <div class="insight-category">${ins.category} ${ins.validated ? '&#10003; VALIDATED' : ''}</div>
+                <div class="insight-category" ${ins.category === 'OVERFIT' ? 'style="color:#ff6b6b;"' : ''}>${ins.category} ${ins.validated ? '&#10003; VALIDATED' : ''}</div>
                 <div class="insight-text">${ins.conclusion}</div>
                 <div class="insight-meta">
-                    <span>Confidence: ${(ins.confidence*100).toFixed(0)}% <span class="conf-bar" style="width:${confPx}px;"></span></span>
+                    <span>Confidence: ${(ins.confidence*100).toFixed(0)}% <span class="conf-bar" style="width:${confPx}px;${ins.category === 'OVERFIT' ? 'background:#ff6b6b;' : ''}"></span></span>
                     <span>Sample: ${ins.sample_size}</span>
                     <span>+${ins.validations} / -${ins.invalidations}</span>
                     ${Object.keys(ins.adjustments).length > 0 ?
@@ -696,7 +1031,6 @@ DASHBOARD_HTML = """
         if (!ai) return;
 
         let html = '';
-        // Sessions
         if (ai.session_stats) {
             html += '<div style="font-size:9px;color:#5a6e8a;padding:2px 4px;grid-column:1/-1;">SESSIONS</div>';
             for (const [name, stats] of Object.entries(ai.session_stats)) {
@@ -708,7 +1042,6 @@ DASHBOARD_HTML = """
                 </div>`;
             }
         }
-        // Volatility
         if (ai.volatility_stats) {
             html += '<div style="font-size:9px;color:#5a6e8a;padding:2px 4px;grid-column:1/-1;margin-top:8px;">VOLATILITY</div>';
             for (const [name, stats] of Object.entries(ai.volatility_stats)) {
@@ -720,7 +1053,6 @@ DASHBOARD_HTML = """
                 </div>`;
             }
         }
-        // Exit reasons
         if (ai.exit_reason_stats) {
             html += '<div style="font-size:9px;color:#5a6e8a;padding:2px 4px;grid-column:1/-1;margin-top:8px;">EXIT REASONS</div>';
             for (const [name, stats] of Object.entries(ai.exit_reason_stats)) {
@@ -738,21 +1070,23 @@ DASHBOARD_HTML = """
     function drawCycleHistory(data) {
         if (!data.cycle_history || data.cycle_history.length === 0) return;
 
-        let html = '<table><tr><th>#</th><th>TF</th><th>Data</th><th>Strategy</th><th>Score</th><th>P&L</th><th>WR</th><th>Sharpe</th><th>AI</th><th>Time</th></tr>';
+        let html = '<table><tr><th>#</th><th>Inst</th><th>TF</th><th>Strategy</th><th>IS Score</th><th>OOS</th><th>P&L</th><th>WR</th><th>Sharpe</th><th>AI</th><th>Fit</th><th>Time</th></tr>';
         const hist = [...data.cycle_history].reverse();
         for (const c of hist) {
             const pnlColor = c.pnl >= 0 ? 'positive' : 'negative';
-            const dataIcon = (c.data_source || '').includes('SYNTHETIC') ? '<span class="negative">SYN</span>' : '<span class="positive">REAL</span>';
+            const overfitIcon = c.overfit_flag ? '<span class="negative">OVERFIT</span>' : '<span class="positive">OK</span>';
             html += `<tr>
                 <td>${c.cycle}</td>
+                <td>${(c.instrument || c.data_symbol || '').substring(0, 8)}</td>
                 <td>${c.tf}m</td>
-                <td>${dataIcon}</td>
                 <td>${c.best_strategy}</td>
                 <td>${c.score.toFixed(0)}</td>
+                <td>${(c.oos_score || 0).toFixed(0)}</td>
                 <td class="${pnlColor}">${formatMoney(c.pnl)}</td>
                 <td>${(c.win_rate*100).toFixed(1)}%</td>
                 <td>${c.sharpe.toFixed(2)}</td>
                 <td class="ai-color">${c.ai_insights || 0}</td>
+                <td>${overfitIcon}</td>
                 <td>${c.duration.toFixed(1)}s</td>
             </tr>`;
         }
@@ -823,6 +1157,30 @@ def api_state():
     if loop is None:
         return jsonify({"status": "NOT STARTED", "cycle_count": 0})
     return jsonify(loop.get_state())
+
+
+@app.route('/api/correlations')
+def api_correlations():
+    global loop
+    if loop is None:
+        return jsonify({})
+    return jsonify(loop.correlation_engine.get_state())
+
+
+@app.route('/api/workers')
+def api_workers():
+    global loop
+    if loop is None:
+        return jsonify([])
+    return jsonify(loop.worker_stats())
+
+
+@app.route('/api/lake')
+def api_lake():
+    global loop
+    if loop is None:
+        return jsonify({})
+    return jsonify(loop.router.get_lake_stats())
 
 
 def start_dashboard(backtest_loop, host='0.0.0.0', port=5000):

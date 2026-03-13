@@ -196,6 +196,19 @@ class BacktestResult:
         elif self.total_trades < 10:
             score -= 100
 
+        # Overfit penalties
+        # Penalize suspiciously high win rates (100% is unrealistic)
+        if self.win_rate >= 0.99:
+            score -= 500
+        elif self.win_rate >= 0.95:
+            score -= 200
+
+        # Penalize if too few unique exit prices (sign of overfitting to specific bars)
+        if self.trades:
+            unique_exits = len(set(round(t.exit_price, 2) for t in self.trades))
+            if unique_exits < self.total_trades * 0.3:
+                score -= 300
+
         return score
 
     def summary(self) -> str:
@@ -235,10 +248,15 @@ class BacktestEngine:
     SLIPPAGE_TICKS = 1          # 1 tick slippage per side
     TICK_SIZE = 0.25
 
-    def __init__(self):
+    def __init__(self, point_value: float = 20.0, tick_size: float = 0.25,
+                 commission_per_side: float = 2.50):
         self.open_positions: List[OpenPosition] = []
         self.closed_trades: List[Trade] = []
         self.next_trade_id = 1
+        # Allow overrides for normalized/percentage data
+        self.POINT_VALUE = point_value
+        self.TICK_SIZE = tick_size
+        self.COMMISSION_PER_SIDE = commission_per_side
 
     def run(self, bars: pd.DataFrame, strategy: BaseStrategy) -> BacktestResult:
         """Run a full backtest of a strategy on the given bars."""

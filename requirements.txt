@@ -4,3 +4,4 @@ matplotlib
 plotly
 flask
 requests
+pyarrow

@@ -2,7 +2,8 @@
 """
 NQ Fractal AI Trading Backtester — Main Entry Point
 
-Launches the continuous backtest-and-refine loop with a live web dashboard.
+Launches multi-source data workers, the continuous backtest-and-refine loop,
+and a live web dashboard.
 
 Usage:
     python main.py                    # Run with defaults
@@ -11,21 +12,25 @@ Usage:
     python main.py --no-dashboard     # Headless mode (console only)
 
 The system will:
-  1. Fetch REAL NQ market data from Yahoo Finance (NQ=F, QQQ fallback)
-  2. Test 5 strategies x N parameter sets each cycle on REAL bars
-  3. AI analyzer examines every trade — learns patterns, draws conclusions
-  4. Analyzer feeds learnings back into evolutionary optimizer
-  5. Evolve parameters using genetic optimization + AI adjustments
-  6. Display everything on a live web dashboard (charts, AI insights, regime analysis)
-  7. Repeat forever — getting smarter every cycle
+  1. Start 5 data workers (Crypto, Stock, Forex, Macro, Historical Backfill)
+  2. Collect multi-source data into data_lake/ (parquet files)
+  3. Test 5 strategies x N parameter sets on random instruments from the lake
+  4. Walk-forward validation: 70% train, 30% out-of-sample test
+  5. AI analyzer examines every trade — learns patterns, detects overfitting
+  6. Cross-instrument correlation engine finds NQ-related signals
+  7. Evolve parameters using genetic optimization + AI adjustments
+  8. Display everything on a live web dashboard
+  9. Repeat forever — getting smarter every cycle
 """
 
 import argparse
 import signal
 import sys
 import time
+from pathlib import Path
 from optimizer import BacktestLoop
 from dashboard import start_dashboard
+from data_workers import start_all_workers
 
 
 def main():
@@ -39,9 +44,12 @@ def main():
     print(r"""
     ╔══════════════════════════════════════════════════════════════╗
     ║          NQ FRACTAL AI TRADING BACKTESTER                   ║
+    ║                  MULTI-SOURCE EDITION                        ║
     ║                                                              ║
-    ║   ALL DATA IS REAL — Yahoo Finance (NQ=F / QQQ)             ║
-    ║   Markets are fractal. Patterns repeat across all scales.    ║
+    ║   Data Workers: 5 active (Crypto, Stock, Forex, Macro, BF)  ║
+    ║   Data Lake: data_lake/ (multi-source, multi-instrument)     ║
+    ║   Walk-Forward Validation: ON (70/30 train/test split)       ║
+    ║   Overfit Detection: ON (OOS scoring + win rate penalties)   ║
     ║                                                              ║
     ║   5 Strategies:                                              ║
     ║     * EMA Crossover (trend following)                        ║
@@ -51,15 +59,21 @@ def main():
     ║     * Multi-TF Fractal Confluence (combined)                 ║
     ║                                                              ║
     ║   AI BRAIN: Analyzes every trade, learns patterns,           ║
-    ║   draws conclusions, feeds learnings back into optimizer.    ║
+    ║   cross-instrument correlation, NQ directional opinion.      ║
     ║                                                              ║
     ║   Population: {pop:>3} parameter sets evolving via GA + AI      ║
     ║   Press Ctrl+C to stop                                       ║
     ╚══════════════════════════════════════════════════════════════╝
     """.format(pop=args.pop))
 
-    # Create the backtest loop
-    loop = BacktestLoop(population_size=args.pop, seed=args.seed)
+    # Start data workers
+    data_lake_root = Path(__file__).parent / "data_lake"
+    data_lake_root.mkdir(exist_ok=True)
+    workers = start_all_workers(data_lake_root)
+    print(f"  Started {len(workers)} data workers")
+
+    # Create the backtest loop with workers
+    loop = BacktestLoop(population_size=args.pop, seed=args.seed, workers=workers)
 
     # Start dashboard
     if not args.no_dashboard:
@@ -70,6 +84,12 @@ def main():
     # Handle Ctrl+C gracefully
     def signal_handler(sig, frame):
         print("\n\n  Stopping backtest loop...")
+
+        # Stop workers
+        for w in workers:
+            w.stop()
+        print("  Workers stopped.")
+
         loop.stop()
         time.sleep(0.5)
 
@@ -92,12 +112,34 @@ def main():
                 print(f"    [{ins['category']}] {ins['conclusion'][:90]} "
                       f"(conf={ins['confidence']:.0%}) {v_mark}")
 
-            # Data stats
-            data_stats = loop.data_feed.get_data_stats()
-            print(f"\n  === DATA USAGE ===")
-            print(f"  Real data: {data_stats['real_data_pct']:.0f}%")
-            print(f"  Cached datasets: {data_stats['cached_datasets']}")
-            print(f"  Live fetches: {data_stats['live_fetches']}")
+            # NQ opinion
+            nq = ai_state.get("nq_opinion", {})
+            if nq:
+                print(f"\n  === NQ AI OPINION ===")
+                print(f"  Direction: {nq.get('direction', '?')} "
+                      f"(confidence: {nq.get('confidence', 0):.0%})")
+
+            # Data lake stats
+            data_stats = loop.router.get_lake_stats()
+            print(f"\n  === DATA LAKE ===")
+            print(f"  Instruments: {data_stats.get('total_instruments', 0)}")
+            print(f"  Files: {data_stats.get('total_files', 0)}")
+            print(f"  Size: {data_stats.get('total_mb', 0):.1f} MB")
+            print(f"  Windows served: {data_stats.get('windows_served', 0)}")
+
+            # Worker stats
+            print(f"\n  === WORKER STATS ===")
+            for w in workers:
+                s = w.get_stats()
+                print(f"  {s['name']}: {s['total_fetches']} fetches, "
+                      f"{s['total_bars']} bars, {s['errors']} errors")
+
+            # OOS summary
+            if loop.oos_scores:
+                print(f"\n  === OUT-OF-SAMPLE VALIDATION ===")
+                print(f"  OOS scores: {len(loop.oos_scores)} tests")
+                print(f"  Avg OOS score: {sum(loop.oos_scores)/len(loop.oos_scores):.1f}")
+                print(f"  Overfit warnings: {len(loop.overfit_warnings)}")
 
         print("\n  Goodbye.\n")
         sys.exit(0)
